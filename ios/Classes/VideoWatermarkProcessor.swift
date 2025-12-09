@@ -164,15 +164,20 @@ final class VideoWatermarkProcessor {
 
     // Processing loop
     var lastPTS = CMTime.zero
-    while reader.status == .reading && !state.cancelled {
-      autoreleasepool {
+    var videoDrained = false
+    while reader.status == .reading && !state.cancelled && !videoDrained {
+      try autoreleasepool {
         if videoInput.isReadyForMoreMediaData, let sample = videoReaderOutput.copyNextSampleBuffer() {
           let pts = CMSampleBufferGetPresentationTimeStamp(sample)
           lastPTS = pts
-          guard let pool = adaptor.pixelBufferPool else { return }
+          guard let pool = adaptor.pixelBufferPool else {
+            throw NSError(domain: "wm", code: -10, userInfo: [NSLocalizedDescriptionKey: "Pixel buffer pool unavailable"])
+          }
           var pb: CVPixelBuffer? = nil
-          CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pb)
-          guard let dst = pb else { return }
+          let status = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pb)
+          guard status == kCVReturnSuccess, let dst = pb else {
+            throw NSError(domain: "wm", code: Int(status), userInfo: [NSLocalizedDescriptionKey: "Failed to allocate pixel buffer: \(status)"])
+          }
 
           // Create base CIImage from sample
           if let srcPB = CMSampleBufferGetImageBuffer(sample) {
@@ -194,6 +199,9 @@ final class VideoWatermarkProcessor {
           // Progress
           let p = max(0.0, min(1.0, CMTimeGetSeconds(pts) / max(0.001, duration)))
           callbacks.onVideoProgress(taskId: taskId, progress: p, etaSec: max(0.0, duration - CMTimeGetSeconds(pts))) { _ in }
+        } else if videoInput.isReadyForMoreMediaData {
+          // 无更多样本时跳出循环，避免 reader/status 长期停留在 reading
+          videoDrained = true
         } else {
           // Back off a little
           usleep(2000)

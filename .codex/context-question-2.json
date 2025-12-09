@@ -1,0 +1,9 @@
+{
+  "question": "Native 回调缺失或任务状态丢失时 Dart 侧如何反馈？",
+  "reason": "需要在回调未到时抛出异常提醒用户而不是无结果。",
+  "findings": [
+    "Callbacks are registered once via _ensureCallbacksRegistered; _CallbacksImpl.onVideoError completes the completer with PlatformException, but only if native invokes onVideoError.",
+    "MethodChannelWatermarkKit keeps tasks in static map. If the fallback .then completes it removes task; if neither callback nor pigeon response arrives, the map entry persists and neither stream nor completer emits an error.",
+    "No timeout or watchdog exists to close the controller and fail the Future when callbacks are missing."
+  ]
+}

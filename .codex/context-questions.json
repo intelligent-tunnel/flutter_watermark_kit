@@ -1,0 +1,17 @@
+[
+  {
+    "id": "q1",
+    "text": "在哪些情况下 composeVideo 返回的 Future 不会完成？pigeon 调用是否可能永远 pending？",
+    "priority": "high"
+  },
+  {
+    "id": "q2",
+    "text": "是否需要超时/兜底错误来防止 callbacks 未触发导致的悬挂？",
+    "priority": "medium"
+  },
+  {
+    "id": "q3",
+    "text": "Native 回调未触发或 task 状态丢失时 Dart 侧如何报告错误？",
+    "priority": "high"
+  }
+]

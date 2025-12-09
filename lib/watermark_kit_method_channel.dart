@@ -227,6 +227,8 @@ class MethodChannelWatermarkKit extends WatermarkKitPlatform {
   }
   // ---------------- Video API ----------------
   static final Map<String, _VideoTaskState> _tasks = {};
+  static const Duration _initialWatchdog = Duration(seconds: 10);
+  static const Duration _progressWatchdog = Duration(seconds: 30);
   static bool _callbacksInitialized = false;
 
   void _ensureCallbacksRegistered() {
@@ -265,6 +267,7 @@ class MethodChannelWatermarkKit extends WatermarkKitPlatform {
     final ctrl = StreamController<double>.broadcast();
     final completer = Completer<VideoResult>();
     _tasks[taskId] = _VideoTaskState(ctrl, completer);
+    _tasks[taskId]?.startWatchdog(_initialWatchdog, taskId);
 
     pigeon.ComposeVideoRequest req = pigeon.ComposeVideoRequest(
       taskId: taskId,
@@ -291,6 +294,7 @@ class MethodChannelWatermarkKit extends WatermarkKitPlatform {
       // Fallback completion in case onVideoCompleted wasn't received
       final st = _tasks[res.taskId];
       if (st != null && !st.completer.isCompleted) {
+        st.cancelWatchdog();
         st.ctrl.close();
         st.completer.complete(VideoResult(
           path: res.outputVideoPath,
@@ -305,6 +309,7 @@ class MethodChannelWatermarkKit extends WatermarkKitPlatform {
       // If error surfaces via returned Future
       final s = _tasks.remove(taskId);
       if (s != null && !s.completer.isCompleted) {
+        s.cancelWatchdog();
         s.ctrl.addError(e, st);
         s.ctrl.close();
         s.completer.completeError(e, st);
@@ -330,13 +335,37 @@ class MethodChannelWatermarkKit extends WatermarkKitPlatform {
 class _VideoTaskState {
   final StreamController<double> ctrl;
   final Completer<VideoResult> completer;
+  Timer? watchdog;
   _VideoTaskState(this.ctrl, this.completer);
+
+  void startWatchdog(Duration duration, String taskId) {
+    cancelWatchdog();
+    watchdog = Timer(duration, () {
+      if (!completer.isCompleted) {
+        final err = TimeoutException('composeVideo($taskId) timed out waiting for native callbacks');
+        ctrl.addError(err);
+        ctrl.close();
+        completer.completeError(err);
+        MethodChannelWatermarkKit._tasks.remove(taskId);
+      }
+    });
+  }
+
+  void bumpWatchdog(Duration duration, String taskId) {
+    startWatchdog(duration, taskId);
+  }
+
+  void cancelWatchdog() {
+    watchdog?.cancel();
+    watchdog = null;
+  }
 }
 
 class _CallbacksImpl extends pigeon.WatermarkCallbacks {
   @override
   void onVideoProgress(String taskId, double progress, double etaSec) {
     final st = MethodChannelWatermarkKit._tasks[taskId];
+    st?.bumpWatchdog(MethodChannelWatermarkKit._progressWatchdog, taskId);
     st?.ctrl.add(progress);
   }
 
@@ -344,6 +373,7 @@ class _CallbacksImpl extends pigeon.WatermarkCallbacks {
   void onVideoCompleted(pigeon.ComposeVideoResult result) {
     final st = MethodChannelWatermarkKit._tasks.remove(result.taskId);
     if (st != null && !st.completer.isCompleted) {
+      st.cancelWatchdog();
       st.ctrl.close();
       st.completer.complete(VideoResult(
         path: result.outputVideoPath,
@@ -360,6 +390,7 @@ class _CallbacksImpl extends pigeon.WatermarkCallbacks {
     final st = MethodChannelWatermarkKit._tasks.remove(taskId);
     if (st != null && !st.completer.isCompleted) {
       final err = PlatformException(code: code, message: message);
+      st.cancelWatchdog();
       st.ctrl.addError(err);
       st.ctrl.close();
       st.completer.completeError(err);

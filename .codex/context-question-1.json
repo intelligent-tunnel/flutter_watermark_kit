@@ -1,0 +1,9 @@
+{
+  "question": "composeVideo Future 可能在哪些路径上不完成？",
+  "reason": "用户反馈 done 挂起且无异常，需要找出未完成路径。",
+  "findings": [
+    "lib/watermark_kit_method_channel.dart: composeVideo sets up Completer and StreamController, then unawaited(WatermarkApi().composeVideo(req)). The completer only completes via callbacks (_CallbacksImpl.onVideoCompleted/onVideoError) or via the .then fallback when the pigeon Future resolves.",
+    "If WatermarkApi().composeVideo never resolves (e.g., platform side never replies) and callbacks never fire, completer.future hangs with no timeout.",
+    "If native processing stalls without sending onVideoError/onVideoCompleted, Dart side has no guard to emit an error."
+  ]
+}

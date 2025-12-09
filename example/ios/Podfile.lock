@@ -43,12 +43,12 @@ EXTERNAL SOURCES:
 
 SPEC CHECKSUMS:
   Flutter: e0871f40cf51350855a761d2e70bf5af5b9b5de7
-  gal: 6a522c75909f1244732d4596d11d6a2f86ff37a5
-  image_picker_ios: c560581cceedb403a6ff17f2f816d7fea1421fc1
-  integration_test: 252f60fa39af5e17c3aa9899d35d908a0721b573
-  path_provider_foundation: 2b6b4c569c0fb62ec74538f866245ac84301af46
-  video_player_avfoundation: 7c6c11d8470e1675df7397027218274b6d2360b3
-  watermark_kit: 159522e3770436d91dabf8281eb0cf1fd0582887
+  gal: baecd024ebfd13c441269ca7404792a7152fde89
+  image_picker_ios: 7fe1ff8e34c1790d6fff70a32484959f563a928a
+  integration_test: 4a889634ef21a45d28d50d622cf412dc6d9f586e
+  path_provider_foundation: 080d55be775b7414fd5a5ef3ac137b97b097e564
+  video_player_avfoundation: 2cef49524dd1f16c5300b9cd6efd9611ce03639b
+  watermark_kit: 2b704710a6b15ebb5ccd06fbce362af3d7e7a263
 
 PODFILE CHECKSUM: 4305caec6b40dde0ae97be1573c53de1882a07e5
 

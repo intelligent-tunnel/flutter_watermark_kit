@@ -1,0 +1,13 @@
+{
+  "can_define_interface": true,
+  "rationale_interface": "composeVideo input/output already defined via WatermarkKitPlatform; need to emit errors via Future/Stream when native stalls.",
+  "understand_tech_choices": true,
+  "rationale_tech": "MethodChannel + Pigeon used for async callbacks; tasks tracked via StreamController/Completer.",
+  "risks_identified": [
+    "No timeout/watchdog when callbacks missing",
+    "Potential lingering tasks map causing hangs",
+    "Lack of propagated exception when native Future stalls"
+  ],
+  "validation_plan_ready": true,
+  "validation_details": "Add unit test to ensure composeVideo.done completes with error when pigeon call rejects; maybe simulate missing callback and ensure fallback error surfaces."
+}

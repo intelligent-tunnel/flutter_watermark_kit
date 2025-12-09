@@ -1,0 +1,30 @@
+{
+  "module": "composeVideo task handling",
+  "locations": [
+    "lib/watermark_kit_method_channel.dart#L229-L317 (composeVideo wiring, callbacks, fallback completion)",
+    "lib/video_task.dart (VideoTask, VideoResult data structures)",
+    "ios/Classes/WatermarkApiImpl.swift & VideoWatermarkProcessor.swift (native start/complete/error callbacks)",
+    "android/src/main/kotlin/com/tttocklll/watermark_kit/WatermarkApiImpl.kt (native start + callbacks)"
+  ],
+  "current_behavior": "MethodChannel composeVideo generates a taskId, stores a StreamController and Completer, fires WatermarkApi.composeVideo via pigeon. Completion usually comes through WatermarkCallbacks.onVideoCompleted/onVideoError; a fallback completion exists in the .then handler when the host replies with ComposeVideoResult. Errors surfaced by the returned Future addError/completeError and remove the task.",
+  "tech_stack": {
+    "framework": "Flutter plugin with pigeon message channels",
+    "languages": "Dart for plugin interface, Swift/Kotlin for native processing",
+    "async_model": "Completer+StreamController per task stored in static map; callbacks wired through WatermarkCallbacks"
+  },
+  "tests": [
+    "test/video_callbacks_test.dart covers progress/completion routing with mock message handler",
+    "test/watermark_kit_test.dart exercises composeVideo signature and default parameters"
+  ],
+  "observation": {
+    "risks": [
+      "done Future can hang if neither onVideoCompleted/onVideoError fires and pigeon call never resolves",
+      "no timeout or guard to surface stalled processing",
+      "fallback completion depends on returned ComposeVideoResult; if native fails before responding, completer stays pending"
+    ],
+    "info_gaps": [
+      "no guard to propagate platform exceptions thrown before callbacks register",
+      "no logging/exception surfacing for stalled tasks"
+    ]
+  }
+}
