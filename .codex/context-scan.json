@@ -1,30 +1,33 @@
 {
-  "module": "composeVideo task handling",
+  "module": "composeVideo with audio pass-through",
   "locations": [
-    "lib/watermark_kit_method_channel.dart#L229-L317 (composeVideo wiring, callbacks, fallback completion)",
-    "lib/video_task.dart (VideoTask, VideoResult data structures)",
-    "ios/Classes/WatermarkApiImpl.swift & VideoWatermarkProcessor.swift (native start/complete/error callbacks)",
-    "android/src/main/kotlin/com/tttocklll/watermark_kit/WatermarkApiImpl.kt (native start + callbacks)"
+    "lib/watermark_kit_method_channel.dart: video task creation + callbacks wiring",
+    "ios/Classes/WatermarkApiImpl.swift: forwards composeVideo to VideoWatermarkProcessor",
+    "ios/Classes/VideoWatermarkProcessor.swift: AVAssetReader/Writer pipeline; optional audio pass-through",
+    "android/src/main/kotlin/com/tttocklll/watermark_kit/video/VideoWatermarkProcessor.kt: MediaMuxer pipeline (works with audio)",
+    "example/lib/main.dart: sample composeVideo usage"
   ],
-  "current_behavior": "MethodChannel composeVideo generates a taskId, stores a StreamController and Completer, fires WatermarkApi.composeVideo via pigeon. Completion usually comes through WatermarkCallbacks.onVideoCompleted/onVideoError; a fallback completion exists in the .then handler when the host replies with ComposeVideoResult. Errors surfaced by the returned Future addError/completeError and remove the task.",
+  "current_behavior": "Dart side issues composeVideo via pigeon, registers callbacks, and resolves when native calls onVideoCompleted/onVideoError (watchdog already present). iOS pipeline reads video via AVAssetReader (BGRA), overlays via CI, writes via AVAssetWriter. Audio track is optional: AVAssetReaderTrackOutput with outputSettings=nil and AVAssetWriterInput(audio, outputSettings=nil). Audio samples are appended opportunistically inside the video loop and drained once more after video finishes. Android pipeline muxes audio by copying samples asynchronously while video encoder runs.",
   "tech_stack": {
-    "framework": "Flutter plugin with pigeon message channels",
-    "languages": "Dart for plugin interface, Swift/Kotlin for native processing",
-    "async_model": "Completer+StreamController per task stored in static map; callbacks wired through WatermarkCallbacks"
+    "framework": "Flutter plugin using pigeon for platform channels",
+    "languages": "Dart + Swift (AVFoundation) + Kotlin (MediaCodec/MediaMuxer)",
+    "async_model": "Per-task streams/completer on Dart; native pipelines post callbacks via WatermarkCallbacks"
   },
   "tests": [
-    "test/video_callbacks_test.dart covers progress/completion routing with mock message handler",
-    "test/watermark_kit_test.dart exercises composeVideo signature and default parameters"
+    "test/video_callbacks_test.dart: progress/completion/error routing via mocked pigeon channel",
+    "test/watermark_kit_test.dart: composeVideo API defaults",
+    "no automated test covers audio preservation"
   ],
   "observation": {
     "risks": [
-      "done Future can hang if neither onVideoCompleted/onVideoError fires and pigeon call never resolves",
-      "no timeout or guard to surface stalled processing",
-      "fallback completion depends on returned ComposeVideoResult; if native fails before responding, completer stays pending"
+      "iOS audio path best-effort only; audio append tied to video loop readiness and may be skipped",
+      "Audio reader/writer created but writer inputs may never start if not requested on a dedicated queue",
+      "No validation that audio track exists in output; silent failures possible"
     ],
     "info_gaps": [
-      "no guard to propagate platform exceptions thrown before callbacks register",
-      "no logging/exception surfacing for stalled tasks"
+      "Exact sample video/audio formats that fail (source codec, channels, rate)",
+      "Whether outputSettings=nil for AVAssetWriterInput is incompatible for some inputs/fileType",
+      "Whether audio samples are appended after writer.startSession and before finishWriting"
     ]
   }
 }

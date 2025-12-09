@@ -1,13 +1,13 @@
 {
   "can_define_interface": true,
-  "rationale_interface": "composeVideo input/output already defined via WatermarkKitPlatform; need to emit errors via Future/Stream when native stalls.",
+  "rationale_interface": "composeVideo 输入/输出已由 Pigeon 定义；需确保 iOS 侧保留音频并在失败时回调 onVideoError。",
   "understand_tech_choices": true,
-  "rationale_tech": "MethodChannel + Pigeon used for async callbacks; tasks tracked via StreamController/Completer.",
+  "rationale_tech": "Flutter+Pigeon，iOS 使用 AVAssetReader/Writer 处理视频并尝试音频直通，Android 用 MediaMuxer copy audio。",
   "risks_identified": [
-    "No timeout/watchdog when callbacks missing",
-    "Potential lingering tasks map causing hangs",
-    "Lack of propagated exception when native Future stalls"
+    "音频直通 outputSettings=nil 可能与源格式不兼容导致静音",
+    "缺少音频写入失败的检测与回退，writer 失败不回调错误",
+    "视频循环与音频追加共享队列，若 append 被跳过音频可能丢失"
   ],
   "validation_plan_ready": true,
-  "validation_details": "Add unit test to ensure composeVideo.done completes with error when pigeon call rejects; maybe simulate missing callback and ensure fallback error surfaces."
+  "validation_details": "在 iOS 侧强制重编码 AAC 并检测 writer.canAdd/append 结果；本地跑示例或最小视频通过 composeVideo 后检查输出是否有音轨（若无法运行，说明验证风险）。"
 }

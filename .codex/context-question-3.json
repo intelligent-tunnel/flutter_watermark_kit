@@ -1,0 +1,9 @@
+{
+  "question": "iOS composeVideo 输出为何丢失音频？",
+  "reason": "用户报告仅 iOS 输出静音，需要确认音频链路是否被跳过。",
+  "findings": [
+    "VideoWatermarkProcessor.swift 创建 audioReaderOutput 时 outputSettings=nil（压缩直通），audioInput 也为 outputSettings=nil；若源音频编码或 mp4 文件类型不支持直通，canAdd/append 会失败但当前代码未检测，最终静默跳过音轨。",
+    "音频追加仅在视频循环中 opportunistic 触发，未单独队列拉取；append 返回值未检查，writer.status 失败不会上抛，音频丢失后仍视为成功。",
+    "Android 路径始终 copy 音频到 muxer，iOS 缺少对音频存在性的显式校验或回退重编码。"
+  ]
+}

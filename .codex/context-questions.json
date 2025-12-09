@@ -1,17 +1,17 @@
 [
   {
     "id": "q1",
-    "text": "在哪些情况下 composeVideo 返回的 Future 不会完成？pigeon 调用是否可能永远 pending？",
+    "text": "为什么 iOS composeVideo 输出缺失音频？是音频轨未被添加、未写入，还是写入失败？",
     "priority": "high"
   },
   {
     "id": "q2",
-    "text": "是否需要超时/兜底错误来防止 callbacks 未触发导致的悬挂？",
-    "priority": "medium"
+    "text": "音频传递逻辑（Reader/Writer）是否在视频循环中被跳过，需独立队列或强制拉取？",
+    "priority": "high"
   },
   {
     "id": "q3",
-    "text": "Native 回调未触发或 task 状态丢失时 Dart 侧如何报告错误？",
-    "priority": "high"
+    "text": "AVAssetWriterInput(outputSettings=nil) 的直通是否与输入编码或 .mp4 文件类型不兼容，需要显式 AAC 重编码？",
+    "priority": "medium"
   }
 ]

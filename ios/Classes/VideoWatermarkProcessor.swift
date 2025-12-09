@@ -85,17 +85,6 @@ final class VideoWatermarkProcessor {
     guard reader.canAdd(videoReaderOutput) else { throw NSError(domain: "wm", code: -2, userInfo: [NSLocalizedDescriptionKey: "Cannot add video reader output"]) }
     reader.add(videoReaderOutput)
 
-    // Optional audio passthrough (best-effort)
-    let audioTrack = asset.tracks(withMediaType: .audio).first
-    var audioReaderOutput: AVAssetReaderOutput? = nil
-    if let a = audioTrack {
-      let out = AVAssetReaderTrackOutput(track: a, outputSettings: nil) // compressed pass-through
-      if reader.canAdd(out) {
-        reader.add(out)
-        audioReaderOutput = out
-      }
-    }
-
     let writer = try AVAssetWriter(outputURL: state.outputURL, fileType: .mp4)
     // Video writer input
     let codec: AVVideoCodecType = (request.codec == .hevc) ? .hevc : .h264
@@ -125,15 +114,38 @@ final class VideoWatermarkProcessor {
       kCVPixelBufferIOSurfacePropertiesKey as String: [:]
     ])
 
-    // Optional audio writer input (pass-through)
+    // 音频：强制重编码 AAC，避免直通不兼容导致静音
+    let audioTrack = asset.tracks(withMediaType: .audio).first
+    var audioReaderOutput: AVAssetReaderOutput? = nil
     var audioInput: AVAssetWriterInput? = nil
-    if audioReaderOutput != nil {
-      let ain = AVAssetWriterInput(mediaType: .audio, outputSettings: nil)
+    if let a = audioTrack {
+      let (sampleRate, channels) = Self.audioFormatInfo(from: a)
+      let audioReaderSettings: [String: Any] = [
+        AVFormatIDKey: kAudioFormatLinearPCM,
+        AVSampleRateKey: sampleRate,
+        AVNumberOfChannelsKey: channels,
+        AVLinearPCMIsNonInterleaved: false,
+        AVLinearPCMIsFloatKey: false,
+        AVLinearPCMBitDepthKey: 16,
+        AVLinearPCMIsBigEndianKey: false
+      ]
+      let out = AVAssetReaderAudioMixOutput(audioTracks: [a], audioSettings: audioReaderSettings)
+      out.alwaysCopiesSampleData = false
+      guard reader.canAdd(out) else { throw NSError(domain: "wm", code: -20, userInfo: [NSLocalizedDescriptionKey: "无法添加音频读取器"]) }
+      reader.add(out)
+      audioReaderOutput = out
+
+      let audioWriterSettings: [String: Any] = [
+        AVFormatIDKey: kAudioFormatMPEG4AAC,
+        AVSampleRateKey: sampleRate,
+        AVNumberOfChannelsKey: channels,
+        AVEncoderBitRateKey: Self.estimateAudioBitrate(sampleRate: sampleRate, channels: channels)
+      ]
+      let ain = AVAssetWriterInput(mediaType: .audio, outputSettings: audioWriterSettings)
       ain.expectsMediaDataInRealTime = false
-      if writer.canAdd(ain) {
-        writer.add(ain)
-        audioInput = ain
-      }
+      guard writer.canAdd(ain) else { throw NSError(domain: "wm", code: -21, userInfo: [NSLocalizedDescriptionKey: "无法添加音频写入器"]) }
+      writer.add(ain)
+      audioInput = ain
     }
 
     guard writer.startWriting() else { throw writer.error ?? NSError(domain: "wm", code: -4, userInfo: [NSLocalizedDescriptionKey: "Failed to start writing"]) }
@@ -165,6 +177,7 @@ final class VideoWatermarkProcessor {
     // Processing loop
     var lastPTS = CMTime.zero
     var videoDrained = false
+    var audioFinished = audioInput == nil
     while reader.status == .reading && !state.cancelled && !videoDrained {
       try autoreleasepool {
         if videoInput.isReadyForMoreMediaData, let sample = videoReaderOutput.copyNextSampleBuffer() {
@@ -207,10 +220,18 @@ final class VideoWatermarkProcessor {
           usleep(2000)
         }
 
-        // Pump audio opportunistically
-        if let aout = audioReaderOutput, let ain = audioInput, ain.isReadyForMoreMediaData {
-          if let asample = aout.copyNextSampleBuffer() {
-            ain.append(asample)
+        // 音频同步拉取，确保音轨完整写入
+        if let aout = audioReaderOutput, let ain = audioInput, !audioFinished {
+          while ain.isReadyForMoreMediaData {
+            guard let asample = aout.copyNextSampleBuffer() else {
+              ain.markAsFinished()
+              audioFinished = true
+              break
+            }
+            if !ain.append(asample) {
+              let msg = writer.error?.localizedDescription ?? "音频写入失败"
+              throw NSError(domain: "wm", code: -22, userInfo: [NSLocalizedDescriptionKey: msg])
+            }
           }
         }
       }
@@ -228,13 +249,24 @@ final class VideoWatermarkProcessor {
       return
     }
 
-    // Drain remaining audio
-    if let aout = audioReaderOutput, let ain = audioInput {
-      while reader.status == .reading || reader.status == .completed {
-        if let asample = aout.copyNextSampleBuffer() {
-          while !ain.isReadyForMoreMediaData { usleep(2000) }
-          ain.append(asample)
-        } else { break }
+    // 补齐剩余音频，避免尾部被截断
+    if let aout = audioReaderOutput, let ain = audioInput, !audioFinished {
+      var drainingAudio = true
+      while drainingAudio {
+        while ain.isReadyForMoreMediaData {
+          guard let asample = aout.copyNextSampleBuffer() else {
+            ain.markAsFinished()
+            audioFinished = true
+            drainingAudio = false
+            break
+          }
+          if !ain.append(asample) {
+            let msg = writer.error?.localizedDescription ?? "音频写入失败"
+            throw NSError(domain: "wm", code: -23, userInfo: [NSLocalizedDescriptionKey: msg])
+          }
+        }
+        if !drainingAudio { break }
+        usleep(2000)
       }
     }
 
@@ -266,6 +298,25 @@ final class VideoWatermarkProcessor {
     let f = max(24.0, fps > 0 ? fps : 30.0)
     let br = bpp * Float(width * height) * f
     return max(500_000, Int(br))
+  }
+
+  // 获取音频轨基础信息（采样率/声道），为 AAC 重编码提供参数
+  private static func audioFormatInfo(from track: AVAssetTrack) -> (Double, Int) {
+    guard let anyDesc = track.formatDescriptions.first else { return (44_100.0, 2) }
+    let desc = anyDesc as! CMFormatDescription
+    guard CMFormatDescriptionGetMediaType(desc) == kCMMediaType_Audio,
+          let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(desc)?.pointee else {
+      return (44_100.0, 2)
+    }
+    let rate = asbd.mSampleRate > 0 ? asbd.mSampleRate : 44_100.0
+    let ch = Int(max(1, asbd.mChannelsPerFrame))
+    return (rate, ch)
+  }
+
+  // 估算 AAC 比特率，保证常见音频具备足够质量
+  private static func estimateAudioBitrate(sampleRate: Double, channels: Int) -> Int {
+    let base = Int(sampleRate * Double(channels) * 2.0)
+    return max(96_000, min(320_000, base))
   }
 
   private static func prepareOverlayCI(request: ComposeVideoRequest, plugin: WatermarkKitPlugin, baseWidth: CGFloat, baseHeight: CGFloat) throws -> CIImage? {
