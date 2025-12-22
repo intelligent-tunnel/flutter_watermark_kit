@@ -99,6 +99,8 @@ final class VideoWatermarkProcessor {
     let renderSize = renderInfo.renderSize
     // 应用于原始帧的变换，负责把像素帧旋转/平移到可见方向。
     let renderTransform = renderInfo.renderTransform
+    // 是否启用 preferredTransform 兜底方案，便于确认竖屏异常分支是否触发。
+    let usedPreferredFallback = renderInfo.usedPreferredFallback
     // 输出关键尺寸与变换信息，便于排查竖屏黑屏问题。
     Self.logDebug(
       "start: input=\(request.inputVideoPath), output=\(state.outputURL.path)",
@@ -113,7 +115,8 @@ final class VideoWatermarkProcessor {
     // 使用 NSCoder.string(for:) 兼容新版 SDK 对仿射变换的字符串输出。
     Self.logDebug(
       "render: renderSize=\(renderSize), " +
-        "renderTransform=\(NSCoder.string(for: renderTransform))",
+        "renderTransform=\(NSCoder.string(for: renderTransform)), " +
+        "preferredFallback=\(usedPreferredFallback)",
       taskId: taskId
     )
 
@@ -406,9 +409,11 @@ final class VideoWatermarkProcessor {
 
   /// 计算视频渲染尺寸与旋转变换，统一输出为可见方向并修正坐标系。
   /// - Parameter track: 原始视频轨道，用于读取像素尺寸与 preferredTransform。
-  /// - Returns: 渲染尺寸与变换，变换已兼容 Core Image 坐标系并保证左下为原点。
+  /// - Returns: 渲染尺寸、渲染变换与兜底标记，变换已兼容 Core Image 坐标系并保证左下为原点。
   /// - Note: 调用方需在渲染阶段应用该变换，并将写入端 transform 置为 identity。
-  private static func buildRenderInfo(for track: AVAssetTrack) -> (renderSize: CGSize, renderTransform: CGAffineTransform) {
+  private static func buildRenderInfo(
+    for track: AVAssetTrack
+  ) -> (renderSize: CGSize, renderTransform: CGAffineTransform, usedPreferredFallback: Bool) {
     // 视频真实像素尺寸，避免 naturalSize 与像素缓冲区不一致导致渲染偏移。
     let pixelSize = Self.videoPixelSize(from: track)
     // 原始像素矩形（未旋转的像素尺寸）。
@@ -432,7 +437,16 @@ final class VideoWatermarkProcessor {
       translationX: -transformedByRender.origin.x,
       y: -transformedByRender.origin.y
     ).concatenating(renderTransform)
-    return (renderSize, normalizedTransform)
+    // 归一化后的矩形范围，用于判断是否仍然存在负坐标问题。
+    let normalizedRect = pixelRect.applying(normalizedTransform)
+    // 是否需要使用 preferredTransform 兜底，避免竖屏视频仍裁剪为空。
+    let usePreferredFallback = !Self.isRectValid(normalizedRect, renderSize: renderSize)
+    if usePreferredFallback {
+      // 使用 preferredTransform 构建兜底变换，保证画面落在可视区域内。
+      let fallbackTransform = Self.buildPreferredOnlyTransform(track: track, pixelRect: pixelRect)
+      return (renderSize, fallbackTransform, true)
+    }
+    return (renderSize, normalizedTransform, false)
   }
 
   /// 构建 Y 轴翻转变换，用于在 Core Image 与 AVFoundation 坐标系间切换。
@@ -441,6 +455,45 @@ final class VideoWatermarkProcessor {
   private static func buildYAxisFlipTransform(height: CGFloat) -> CGAffineTransform {
     // 先平移再翻转，保证 y 轴方向与 AVFoundation 对齐。
     return CGAffineTransform(translationX: 0, y: height).scaledBy(x: 1, y: -1)
+  }
+
+  /// 判断变换后的矩形是否落在可视区域内，用于决定是否启用兜底变换。
+  /// - Parameters:
+  ///   - rect: 变换后的矩形，用于校验坐标原点与尺寸。
+  ///   - renderSize: 目标渲染尺寸，用于比对宽高是否一致。
+  /// - Returns: 为 true 时可直接使用该变换结果。
+  private static func isRectValid(_ rect: CGRect, renderSize: CGSize) -> Bool {
+    // 允许的误差范围，避免浮点误差导致误判。
+    let epsilon: CGFloat = 0.5
+    if rect.origin.x < -epsilon || rect.origin.y < -epsilon {
+      return false
+    }
+    if abs(rect.width - renderSize.width) > epsilon ||
+      abs(rect.height - renderSize.height) > epsilon {
+      return false
+    }
+    return true
+  }
+
+  /// 使用 preferredTransform 构建归一化变换，作为异常情况下的兜底方案。
+  /// - Parameters:
+  ///   - track: 视频轨道对象，用于读取 preferredTransform。
+  ///   - pixelRect: 原始像素矩形，用于计算归一化偏移。
+  /// - Returns: 归一化后的变换矩阵，保证画面落在可视区域内。
+  private static func buildPreferredOnlyTransform(
+    track: AVAssetTrack,
+    pixelRect: CGRect
+  ) -> CGAffineTransform {
+    // 轨道自带的方向变换，用于恢复真实显示方向。
+    let preferredTransform = track.preferredTransform
+    // 应用方向后的矩形，用于计算归一化偏移量。
+    let preferredRect = pixelRect.applying(preferredTransform)
+    // 先平移再应用方向，保证输出原点落在 (0,0)。
+    let normalizedTransform = CGAffineTransform(
+      translationX: -preferredRect.origin.x,
+      y: -preferredRect.origin.y
+    ).concatenating(preferredTransform)
+    return normalizedTransform
   }
 
   /// 获取视频真实像素尺寸，避免 naturalSize 与像素缓冲区不一致导致渲染偏移。
