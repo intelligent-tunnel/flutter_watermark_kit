@@ -74,17 +74,26 @@ final class VideoWatermarkProcessor {
     let preferredTransform = videoTrack.preferredTransform
     let orientedRect = CGRect(origin: .zero, size: natural).applying(preferredTransform)
     let display = CGSize(width: abs(orientedRect.width), height: abs(orientedRect.height))
-    let frameTransform = preferredTransform.concatenating(
-      CGAffineTransform(translationX: -orientedRect.origin.x, y: -orientedRect.origin.y)
-    )
 
     // Prepare overlay CIImage once
     let overlayCI: CIImage? = try Self.prepareOverlayCI(request: request, plugin: plugin, baseWidth: display.width, baseHeight: display.height)
 
     let reader = try AVAssetReader(asset: asset)
-    let videoReaderOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: [
+    let fps: Float = videoTrack.nominalFrameRate > 0 ? videoTrack.nominalFrameRate : 30.0
+    let videoComposition = AVMutableVideoComposition()
+    videoComposition.renderSize = display
+    videoComposition.frameDuration = CMTime(value: 1, timescale: Int32(fps))
+    let instruction = AVMutableVideoCompositionInstruction()
+    instruction.timeRange = CMTimeRange(start: .zero, duration: asset.duration)
+    let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: videoTrack)
+    layerInstruction.setTransform(preferredTransform, at: .zero)
+    instruction.layerInstructions = [layerInstruction]
+    videoComposition.instructions = [instruction]
+
+    let videoReaderOutput = AVAssetReaderVideoCompositionOutput(videoTracks: [videoTrack], videoSettings: [
       kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
     ])
+    videoReaderOutput.videoComposition = videoComposition
     videoReaderOutput.alwaysCopiesSampleData = false
     guard reader.canAdd(videoReaderOutput) else { throw NSError(domain: "wm", code: -2, userInfo: [NSLocalizedDescriptionKey: "Cannot add video reader output"]) }
     reader.add(videoReaderOutput)
@@ -199,10 +208,7 @@ final class VideoWatermarkProcessor {
 
           // Create base CIImage from sample
           if let srcPB = CMSampleBufferGetImageBuffer(sample) {
-            var base = CIImage(cvPixelBuffer: srcPB)
-            if !frameTransform.isIdentity {
-              base = base.transformed(by: frameTransform)
-            }
+            let base = CIImage(cvPixelBuffer: srcPB)
             let output: CIImage
             if let overlay = preparedOverlay {
               // Source-over
