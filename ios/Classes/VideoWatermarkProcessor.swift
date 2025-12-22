@@ -92,6 +92,10 @@ final class VideoWatermarkProcessor {
     guard let videoTrack = asset.tracks(withMediaType: .video).first else {
       throw NSError(domain: "wm", code: -1, userInfo: [NSLocalizedDescriptionKey: "No video track"])
     }
+#if DEBUG
+    Self.debugLog("composeVideo input=\(request.inputVideoPath)")
+    Self.debugLog("durationSec=\(String(format: "%.3f", duration)) fps=\(String(format: "%.2f", videoTrack.nominalFrameRate))")
+#endif
 
     // 计算输出渲染尺寸与帧方向变换，统一以“可见方向”作为坐标系。
     let renderInfo = Self.buildRenderInfo(for: videoTrack)
@@ -388,6 +392,13 @@ final class VideoWatermarkProcessor {
     let renderTransform = inputFlip
       .concatenating(track.preferredTransform)
       .concatenating(outputFlip)
+#if DEBUG
+    let orientedRect = naturalRect.applying(renderTransform)
+    Self.debugLog("track.naturalSize=\(Self.formatSize(naturalSize)) preferred=\(Self.formatTransform(track.preferredTransform))")
+    Self.debugLog("transformedRect=\(Self.formatRect(transformedRect)) renderSize=\(Self.formatSize(renderSize))")
+    Self.debugLog("inputFlip=\(Self.formatTransform(inputFlip)) outputFlip=\(Self.formatTransform(outputFlip))")
+    Self.debugLog("renderTransform=\(Self.formatTransform(renderTransform)) orientedRect=\(Self.formatRect(orientedRect))")
+#endif
     return (renderSize, renderTransform)
   }
 
@@ -398,6 +409,24 @@ final class VideoWatermarkProcessor {
     // 先平移再翻转，保证 y 轴方向与 AVFoundation 对齐。
     return CGAffineTransform(translationX: 0, y: height).scaledBy(x: 1, y: -1)
   }
+
+#if DEBUG
+  private static func debugLog(_ message: String) {
+    NSLog("%@", "[wm] \(message)")
+  }
+
+  private static func formatSize(_ size: CGSize) -> String {
+    return String(format: "%.2fx%.2f", size.width, size.height)
+  }
+
+  private static func formatRect(_ rect: CGRect) -> String {
+    return String(format: "x=%.2f y=%.2f w=%.2f h=%.2f", rect.origin.x, rect.origin.y, rect.size.width, rect.size.height)
+  }
+
+  private static func formatTransform(_ t: CGAffineTransform) -> String {
+    return String(format: "a=%.4f b=%.4f c=%.4f d=%.4f tx=%.2f ty=%.2f", t.a, t.b, t.c, t.d, t.tx, t.ty)
+  }
+#endif
 
   private static func prepareOverlayCI(request: ComposeVideoRequest, plugin: WatermarkKitPlugin, baseWidth: CGFloat, baseHeight: CGFloat) throws -> CIImage? {
     // Prefer watermarkImage; fallback to text
