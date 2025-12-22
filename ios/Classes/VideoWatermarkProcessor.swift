@@ -373,9 +373,28 @@ final class VideoWatermarkProcessor {
   /// - Parameter track: 原始视频轨道，用于读取像素尺寸与 preferredTransform。
   /// - Returns: 渲染尺寸与变换，变换已兼容 Core Image 坐标系并保证左下为原点。
   /// - Note: 调用方需在渲染阶段应用该变换，并将写入端 transform 置为 identity。
+  /// - Note: 开启竖屏强制横屏时，会旋转 90 度并交换宽高。
   private static func buildRenderInfo(for track: AVAssetTrack) -> (renderSize: CGSize, renderTransform: CGAffineTransform) {
     // 视频真实像素尺寸，保证与像素缓冲区宽高一致。
     let pixelSize = Self.videoPixelSize(from: track)
+    // 是否对竖屏强制按横屏处理，用于问题排查验证。
+    let forceLandscape = Self.shouldForceLandscapeForPortrait(pixelSize: pixelSize)
+    if forceLandscape {
+      // 竖屏强制横屏渲染后的目标尺寸。
+      let renderSize = CGSize(width: pixelSize.height, height: pixelSize.width)
+      // 竖屏强制横屏旋转变换（绕原点旋转 90 度）。
+      let rawTransform = CGAffineTransform(rotationAngle: -CGFloat.pi / 2.0)
+      // 旋转前的像素矩形，用于计算归一化偏移。
+      let pixelRect = CGRect(origin: .zero, size: pixelSize)
+      // 旋转后的矩形，用于确定原点偏移量。
+      let transformedRect = pixelRect.applying(rawTransform)
+      // 归一化后的渲染变换，确保画面落在可视区域内。
+      let normalizedTransform = rawTransform.translatedBy(
+        x: -transformedRect.origin.x,
+        y: -transformedRect.origin.y
+      )
+      return (renderSize, normalizedTransform)
+    }
     // 原始像素矩形（未旋转的像素尺寸）。
     let pixelRect = CGRect(origin: .zero, size: pixelSize)
     // 应用轨道方向后的矩形，用于计算偏移与可见尺寸。
@@ -398,6 +417,17 @@ final class VideoWatermarkProcessor {
       y: -transformedByRender.origin.y
     )
     return (renderSize, normalizedTransform)
+  }
+
+  /// 是否对竖屏视频强制按横屏渲染，用于问题排查验证。
+  /// - Parameter pixelSize: 视频像素尺寸。
+  /// - Returns: 为 true 时竖屏会走横屏处理路径。
+  private static func shouldForceLandscapeForPortrait(pixelSize: CGSize) -> Bool {
+    // 竖屏判断：高大于宽即视为竖屏。
+    let isPortrait = pixelSize.height > pixelSize.width
+    // 临时验证开关：需要按横屏处理竖屏时设为 true。
+    let enableForceLandscape = true
+    return enableForceLandscape && isPortrait
   }
 
   /// 获取视频真实像素尺寸，避免 naturalSize 与像素缓冲区不一致导致黑屏。
