@@ -388,7 +388,14 @@ final class VideoWatermarkProcessor {
     let renderTransform = inputFlip
       .concatenating(track.preferredTransform)
       .concatenating(outputFlip)
-    return (renderSize, renderTransform)
+    // 变换后的画面矩形，用于计算原点偏移。
+    let transformedByRender = naturalRect.applying(renderTransform)
+    // 规范化后的渲染变换，确保画面落在可视区域内。
+    let normalizedTransform = renderTransform.translatedBy(
+      x: -transformedByRender.origin.x,
+      y: -transformedByRender.origin.y
+    )
+    return (renderSize, normalizedTransform)
   }
 
   /// 构建 Y 轴翻转变换，用于在 Core Image 与 AVFoundation 坐标系间切换。
