@@ -402,10 +402,14 @@ final class VideoWatermarkProcessor {
   /// - Parameter track: 视频轨道对象。
   /// - Returns: 像素尺寸，读取失败时回退到 naturalSize。
   private static func videoPixelSize(from track: AVAssetTrack) -> CGSize {
-    guard let anyDesc = track.formatDescriptions.first as? CMFormatDescription else {
+    // 格式描述原始对象，用于获取视频像素维度。
+    guard let formatDescAny = track.formatDescriptions.first else {
       return track.naturalSize
     }
-    let dims = CMVideoFormatDescriptionGetDimensions(anyDesc)
+    // 强制转换为视频格式描述，CoreFoundation 类型在此处必定可用。
+    let formatDesc = formatDescAny as! CMFormatDescription
+    // 像素维度信息，用于判定真实像素宽高。
+    let dims = CMVideoFormatDescriptionGetDimensions(formatDesc)
     if dims.width <= 0 || dims.height <= 0 {
       return track.naturalSize
     }
