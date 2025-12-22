@@ -427,11 +427,11 @@ final class VideoWatermarkProcessor {
       .concatenating(outputFlip)
     // 变换后的画面矩形，用于计算归一化平移量。
     let transformedByRender = pixelRect.applying(renderTransform)
-    // 归一化后的渲染变换，确保画面落在可视区域内。
-    let normalizedTransform = renderTransform.translatedBy(
-      x: -transformedByRender.origin.x,
+    // 归一化后的渲染变换，先平移再应用旋转/翻转，确保画面落在可视区域内。
+    let normalizedTransform = CGAffineTransform(
+      translationX: -transformedByRender.origin.x,
       y: -transformedByRender.origin.y
-    )
+    ).concatenating(renderTransform)
     return (renderSize, normalizedTransform)
   }
 
