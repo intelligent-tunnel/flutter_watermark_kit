@@ -104,14 +104,16 @@ final class VideoWatermarkProcessor {
       "start: input=\(request.inputVideoPath), output=\(state.outputURL.path)",
       taskId: taskId
     )
+    // 使用 NSCoder.string(for:) 兼容新版 SDK 对仿射变换的字符串输出。
     Self.logDebug(
       "track: naturalSize=\(videoTrack.naturalSize), " +
-        "preferredTransform=\(NSStringFromCGAffineTransform(videoTrack.preferredTransform))",
+        "preferredTransform=\(NSCoder.string(for: videoTrack.preferredTransform))",
       taskId: taskId
     )
+    // 使用 NSCoder.string(for:) 兼容新版 SDK 对仿射变换的字符串输出。
     Self.logDebug(
       "render: renderSize=\(renderSize), " +
-        "renderTransform=\(NSStringFromCGAffineTransform(renderTransform))",
+        "renderTransform=\(NSCoder.string(for: renderTransform))",
       taskId: taskId
     )
 
