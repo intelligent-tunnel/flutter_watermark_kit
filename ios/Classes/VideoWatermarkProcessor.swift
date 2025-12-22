@@ -235,16 +235,18 @@ final class VideoWatermarkProcessor {
           if let srcPB = CMSampleBufferGetImageBuffer(sample) {
             // 把原始像素帧旋转/平移到可见方向，避免竖拍横放。
             let orientedBase = CIImage(cvPixelBuffer: srcPB).transformed(by: renderTransform)
+            // 强制底图不透明，避免部分视频 alpha 为 0 导致画面全黑。
+            let baseOpaque = Self.forceOpaqueImage(orientedBase)
             let output: CIImage
             if let overlay = preparedOverlay {
               // Source-over
               let filter = CIFilter(name: "CISourceOverCompositing")!
               filter.setValue(overlay, forKey: kCIInputImageKey)
-              filter.setValue(orientedBase, forKey: kCIInputBackgroundImageKey)
-              output = (filter.outputImage ?? orientedBase)
+              filter.setValue(baseOpaque, forKey: kCIInputBackgroundImageKey)
+              output = (filter.outputImage ?? baseOpaque)
                 .cropped(to: CGRect(origin: .zero, size: renderSize))
             } else {
-              output = orientedBase.cropped(to: CGRect(origin: .zero, size: renderSize))
+              output = baseOpaque.cropped(to: CGRect(origin: .zero, size: renderSize))
             }
             ciContext.render(
               output,
@@ -422,6 +424,22 @@ final class VideoWatermarkProcessor {
   private static func buildYAxisFlipTransform(height: CGFloat) -> CGAffineTransform {
     // 先平移再翻转，保证 y 轴方向与 AVFoundation 对齐。
     return CGAffineTransform(translationX: 0, y: height).scaledBy(x: 1, y: -1)
+  }
+
+  /// 强制将 CIImage 的 alpha 设为 1，避免底图透明导致画面全黑。
+  /// - Parameter image: 原始帧图像。
+  /// - Returns: alpha 已归一化的不透明图像。
+  private static func forceOpaqueImage(_ image: CIImage) -> CIImage {
+    guard let filter = CIFilter(name: "CIColorMatrix") else {
+      return image
+    }
+    filter.setValue(image, forKey: kCIInputImageKey)
+    filter.setValue(CIVector(x: 1, y: 0, z: 0, w: 0), forKey: "inputRVector")
+    filter.setValue(CIVector(x: 0, y: 1, z: 0, w: 0), forKey: "inputGVector")
+    filter.setValue(CIVector(x: 0, y: 0, z: 1, w: 0), forKey: "inputBVector")
+    filter.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputAVector")
+    filter.setValue(CIVector(x: 0, y: 0, z: 0, w: 1), forKey: "inputBiasVector")
+    return filter.outputImage ?? image
   }
 
   private static func prepareOverlayCI(request: ComposeVideoRequest, plugin: WatermarkKitPlugin, baseWidth: CGFloat, baseHeight: CGFloat) throws -> CIImage? {
