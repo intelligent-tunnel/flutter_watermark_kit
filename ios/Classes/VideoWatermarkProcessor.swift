@@ -75,6 +75,22 @@ final class VideoWatermarkProcessor {
     let orientedRect = CGRect(origin: .zero, size: natural).applying(preferredTransform)
     let display = CGSize(width: abs(orientedRect.width), height: abs(orientedRect.height))
 
+    if Self.shouldUseExportSession(for: videoTrack) {
+      try processWithExportSession(
+        plugin: plugin,
+        state: state,
+        callbacks: callbacks,
+        taskId: taskId,
+        asset: asset,
+        videoTrack: videoTrack,
+        display: display,
+        duration: duration,
+        onComplete: onComplete,
+        onError: onError
+      )
+      return
+    }
+
     // Prepare overlay CIImage once
     let overlayCI: CIImage? = try Self.prepareOverlayCI(request: request, plugin: plugin, baseWidth: display.width, baseHeight: display.height)
 
@@ -397,5 +413,187 @@ final class VideoWatermarkProcessor {
     default: // bottomRight
       return CGPoint(x: base.maxX - marginX - w, y: base.minY + marginY)
     }
+  }
+
+  private static func shouldUseExportSession(for track: AVAssetTrack) -> Bool {
+    return isHDRVideo(track: track) || isHEVCVideo(track: track)
+  }
+
+  private static func isHDRVideo(track: AVAssetTrack) -> Bool {
+    guard let desc = track.formatDescriptions.first as? CMFormatDescription,
+          let ext = CMFormatDescriptionGetExtensions(desc) as? [String: Any] else {
+      return false
+    }
+
+    let primaries = ext[kCMFormatDescriptionExtension_ColorPrimaries] as? String
+    let transfer = ext[kCMFormatDescriptionExtension_TransferFunction] as? String
+    let depth = (ext[kCMFormatDescriptionExtension_Depth] as? NSNumber)?.intValue ?? 8
+
+    let isBT2020 = primaries == (kCMFormatDescriptionColorPrimaries_ITU_R_2020 as String) ||
+      primaries == (kCVImageBufferColorPrimaries_ITU_R_2020 as String)
+    let isPQ = transfer == (kCMFormatDescriptionTransferFunction_SMPTE_ST_2084 as String) ||
+      transfer == (kCMFormatDescriptionTransferFunction_ITU_R_2100_PQ as String)
+    let isHLG = transfer == (kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG as String)
+
+    return isBT2020 || isPQ || isHLG || depth > 8
+  }
+
+  private static func isHEVCVideo(track: AVAssetTrack) -> Bool {
+    guard let desc = track.formatDescriptions.first as? CMFormatDescription else {
+      return false
+    }
+    return CMFormatDescriptionGetMediaSubType(desc) == kCMVideoCodecType_HEVC
+  }
+
+  private func processWithExportSession(
+    plugin: WatermarkKitPlugin,
+    state: TaskState,
+    callbacks: WatermarkCallbacks,
+    taskId: String,
+    asset: AVAsset,
+    videoTrack: AVAssetTrack,
+    display: CGSize,
+    duration: Double,
+    onComplete: @escaping (ComposeVideoResult) -> Void,
+    onError: @escaping (_ code: String, _ message: String) -> Void
+  ) throws {
+    let request = state.request
+    let composition = AVMutableComposition()
+    guard let compVideo = composition.addMutableTrack(
+      withMediaType: .video,
+      preferredTrackID: kCMPersistentTrackID_Invalid
+    ) else {
+      throw NSError(domain: "wm", code: -30, userInfo: [NSLocalizedDescriptionKey: "无法创建视频轨道"])
+    }
+    let timeRange = CMTimeRange(start: .zero, duration: asset.duration)
+    try compVideo.insertTimeRange(timeRange, of: videoTrack, at: .zero)
+
+    if let audioTrack = asset.tracks(withMediaType: .audio).first,
+       let compAudio = composition.addMutableTrack(
+         withMediaType: .audio,
+         preferredTrackID: kCMPersistentTrackID_Invalid
+       ) {
+      try compAudio.insertTimeRange(timeRange, of: audioTrack, at: .zero)
+    }
+
+    let fps: Float = videoTrack.nominalFrameRate > 0 ? videoTrack.nominalFrameRate : 30.0
+    let videoComposition = AVMutableVideoComposition()
+    videoComposition.renderSize = display
+    videoComposition.frameDuration = CMTime(value: 1, timescale: Int32(fps))
+    let instruction = AVMutableVideoCompositionInstruction()
+    instruction.timeRange = CMTimeRange(start: .zero, duration: asset.duration)
+    let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compVideo)
+    layerInstruction.setTransform(videoTrack.preferredTransform, at: .zero)
+    instruction.layerInstructions = [layerInstruction]
+    videoComposition.instructions = [instruction]
+
+    if let overlayLayer = try Self.prepareOverlayLayer(
+      request: request,
+      plugin: plugin,
+      baseSize: display
+    ) {
+      let parentLayer = CALayer()
+      parentLayer.frame = CGRect(origin: .zero, size: display)
+      let videoLayer = CALayer()
+      videoLayer.frame = parentLayer.frame
+      parentLayer.addSublayer(videoLayer)
+      parentLayer.addSublayer(overlayLayer)
+      videoComposition.animationTool = AVVideoCompositionCoreAnimationTool(
+        postProcessingAsVideoLayer: videoLayer,
+        in: parentLayer
+      )
+    }
+
+    videoComposition.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
+    videoComposition.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
+    videoComposition.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
+
+    guard let exportSession = AVAssetExportSession(
+      asset: composition,
+      presetName: AVAssetExportPresetHighestQuality
+    ) else {
+      throw NSError(domain: "wm", code: -31, userInfo: [NSLocalizedDescriptionKey: "无法创建导出会话"])
+    }
+
+    exportSession.outputURL = state.outputURL
+    exportSession.outputFileType = .mp4
+    exportSession.videoComposition = videoComposition
+    exportSession.shouldOptimizeForNetworkUse = true
+
+    let progressQueue = DispatchQueue(label: "wm.video.export.progress")
+    let progressTimer = DispatchSource.makeTimerSource(queue: progressQueue)
+    progressTimer.schedule(deadline: .now(), repeating: .milliseconds(200))
+    progressTimer.setEventHandler { [weak exportSession] in
+      guard let exportSession else { return }
+      if state.cancelled {
+        exportSession.cancelExport()
+      }
+      let p = max(0.0, min(1.0, Double(exportSession.progress)))
+      callbacks.onVideoProgress(taskId: taskId, progress: p, etaSec: max(0.0, duration * (1.0 - p))) { _ in }
+    }
+    progressTimer.resume()
+
+    exportSession.exportAsynchronously { [weak self] in
+      progressTimer.cancel()
+      guard let self else { return }
+      if state.cancelled || exportSession.status == .cancelled {
+        try? FileManager.default.removeItem(at: state.outputURL)
+        callbacks.onVideoError(taskId: taskId, code: "cancelled", message: "Cancelled") { _ in }
+        onError("cancelled", "Cancelled")
+        self.tasks[taskId] = nil
+        return
+      }
+
+      if exportSession.status == .completed {
+        let res = ComposeVideoResult(taskId: taskId,
+                                     outputVideoPath: state.outputURL.path,
+                                     width: Int64(display.width),
+                                     height: Int64(display.height),
+                                     durationMs: Int64(duration * 1000.0),
+                                     codec: request.codec)
+        callbacks.onVideoCompleted(result: res) { _ in }
+        onComplete(res)
+      } else {
+        let msg = exportSession.error?.localizedDescription ?? "导出失败"
+        callbacks.onVideoError(taskId: taskId, code: "encode_failed", message: msg) { _ in }
+        onError("encode_failed", msg)
+      }
+      self.tasks[taskId] = nil
+    }
+  }
+
+  private static func prepareOverlayLayer(
+    request: ComposeVideoRequest,
+    plugin: WatermarkKitPlugin,
+    baseSize: CGSize
+  ) throws -> CALayer? {
+    guard let overlayCI = try prepareOverlayCI(
+      request: request,
+      plugin: plugin,
+      baseWidth: baseSize.width,
+      baseHeight: baseSize.height
+    ) else {
+      return nil
+    }
+    guard let overlayCG = plugin.sharedCIContext.createCGImage(overlayCI, from: overlayCI.extent) else {
+      return nil
+    }
+
+    let baseRect = CGRect(origin: .zero, size: baseSize)
+    let wmRect = overlayCI.extent
+    let marginX = (request.marginUnit == .percent) ? CGFloat(request.margin) * baseSize.width : CGFloat(request.margin)
+    let marginY = (request.marginUnit == .percent) ? CGFloat(request.margin) * baseSize.height : CGFloat(request.margin)
+    var pos = positionRect(base: baseRect, overlay: wmRect, anchor: request.anchor, marginX: marginX, marginY: marginY)
+    let dx = (request.offsetUnit == .percent) ? CGFloat(request.offsetX) * baseSize.width : CGFloat(request.offsetX)
+    let dy = (request.offsetUnit == .percent) ? CGFloat(request.offsetY) * baseSize.height : CGFloat(request.offsetY)
+    pos.x += dx
+    pos.y += dy
+
+    let layer = CALayer()
+    layer.contents = overlayCG
+    layer.opacity = Float(request.opacity)
+    layer.frame = CGRect(x: floor(pos.x), y: floor(pos.y), width: wmRect.width, height: wmRect.height)
+    layer.contentsScale = UIScreen.main.scale
+    return layer
   }
 }
