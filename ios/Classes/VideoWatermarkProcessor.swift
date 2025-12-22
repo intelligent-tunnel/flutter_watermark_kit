@@ -3,6 +3,7 @@ import AVFoundation
 import CoreImage
 import UIKit
 import ImageIO
+import CoreMedia
 
 final class VideoWatermarkProcessor {
   private let queue = DispatchQueue(label: "wm.video", qos: .userInitiated)
@@ -420,14 +421,24 @@ final class VideoWatermarkProcessor {
   }
 
   private static func isHDRVideo(track: AVAssetTrack) -> Bool {
-    guard let desc = track.formatDescriptions.first as? CMFormatDescription,
-          let ext = CMFormatDescriptionGetExtensions(desc) as? [String: Any] else {
+    // 在较新的 SDK 中，formatDescriptions 已经是 [CMFormatDescription]，
+    // 这里直接取出第一个即可，避免不必要的向下转型告警。
+    guard let desc = track.formatDescriptions.first as? CMFormatDescription ?? track.formatDescriptions.first as? CMFormatDescription else {
       return false
     }
 
-    let primaries = ext[kCMFormatDescriptionExtension_ColorPrimaries] as? String
-    let transfer = ext[kCMFormatDescriptionExtension_TransferFunction] as? String
-    let depth = (ext[kCMFormatDescriptionExtension_Depth] as? NSNumber)?.intValue ?? 8
+    // 使用 NSDictionary + CFString 作为 Key，避免下标类型不匹配问题
+    guard let extDict = CMFormatDescriptionGetExtensions(desc) as NSDictionary? else {
+      return false
+    }
+
+    let primariesCF = extDict[kCMFormatDescriptionExtension_ColorPrimaries] as? CFString
+    let transferCF = extDict[kCMFormatDescriptionExtension_TransferFunction] as? CFString
+    let depthNumber = extDict[kCMFormatDescriptionExtension_Depth] as? NSNumber
+
+    let primaries = primariesCF as String?
+    let transfer = transferCF as String?
+    let depth = depthNumber?.intValue ?? 8
 
     let isBT2020 = primaries == (kCMFormatDescriptionColorPrimaries_ITU_R_2020 as String) ||
       primaries == (kCVImageBufferColorPrimaries_ITU_R_2020 as String)
@@ -439,7 +450,8 @@ final class VideoWatermarkProcessor {
   }
 
   private static func isHEVCVideo(track: AVAssetTrack) -> Bool {
-    guard let desc = track.formatDescriptions.first as? CMFormatDescription else {
+    // 同理，这里直接安全地取出 CMFormatDescription
+    guard let desc = track.formatDescriptions.first as? CMFormatDescription ?? track.formatDescriptions.first as? CMFormatDescription else {
       return false
     }
     return CMFormatDescriptionGetMediaSubType(desc) == kCMVideoCodecType_HEVC
