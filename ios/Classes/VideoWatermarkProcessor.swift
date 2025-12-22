@@ -99,6 +99,21 @@ final class VideoWatermarkProcessor {
     let renderSize = renderInfo.renderSize
     // 应用于原始帧的变换，负责把像素帧旋转/平移到可见方向。
     let renderTransform = renderInfo.renderTransform
+    // 输出关键尺寸与变换信息，便于排查竖屏黑屏问题。
+    Self.logDebug(
+      "start: input=\(request.inputVideoPath), output=\(state.outputURL.path)",
+      taskId: taskId
+    )
+    Self.logDebug(
+      "track: naturalSize=\(videoTrack.naturalSize), " +
+        "preferredTransform=\(NSStringFromCGAffineTransform(videoTrack.preferredTransform))",
+      taskId: taskId
+    )
+    Self.logDebug(
+      "render: renderSize=\(renderSize), " +
+        "renderTransform=\(NSStringFromCGAffineTransform(renderTransform))",
+      taskId: taskId
+    )
 
     // Prepare overlay CIImage once
     let overlayCI: CIImage? = try Self.prepareOverlayCI(
@@ -217,6 +232,8 @@ final class VideoWatermarkProcessor {
     var lastPTS = CMTime.zero
     var videoDrained = false
     var audioFinished = audioInput == nil
+    // 首帧日志只打印一次，避免频繁刷屏影响性能。
+    var didLogFirstFrame = false
     while reader.status == .reading && !state.cancelled && !videoDrained {
       try autoreleasepool {
         if videoInput.isReadyForMoreMediaData, let sample = videoReaderOutput.copyNextSampleBuffer() {
@@ -235,6 +252,15 @@ final class VideoWatermarkProcessor {
           if let srcPB = CMSampleBufferGetImageBuffer(sample) {
             // 把原始像素帧旋转/平移到可见方向，避免竖拍横放。
             let orientedBase = CIImage(cvPixelBuffer: srcPB).transformed(by: renderTransform)
+            if !didLogFirstFrame {
+              didLogFirstFrame = true
+              Self.logDebug(
+                "firstFrame: pixelBuffer=\(CVPixelBufferGetWidth(srcPB))x\(CVPixelBufferGetHeight(srcPB)), " +
+                  "baseExtent=\(orientedBase.extent), renderSize=\(renderSize), " +
+                  "intersects=\(orientedBase.extent.intersects(CGRect(origin: .zero, size: renderSize)))",
+                taskId: taskId
+              )
+            }
             let output: CIImage
             if let overlay = preparedOverlay {
               // Source-over
@@ -339,6 +365,15 @@ final class VideoWatermarkProcessor {
       }
       self.tasks[taskId] = nil
     }
+  }
+
+  /// 统一输出视频调试日志，避免多处日志格式不一致。
+  /// - Parameters:
+  ///   - message: 需要输出的日志内容，用于定位尺寸/方向问题。
+  ///   - taskId: 任务唯一标识，便于串联同一次处理流程。
+  /// - Returns: 无返回值。
+  private static func logDebug(_ message: String, taskId: String) {
+    NSLog("[WatermarkKit][\(taskId)] \(message)")
   }
 
   private static func estimateBitrate(width: Int, height: Int, fps: Float) -> Int {
