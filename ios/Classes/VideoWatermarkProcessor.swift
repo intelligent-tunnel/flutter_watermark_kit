@@ -405,27 +405,34 @@ final class VideoWatermarkProcessor {
   }
 
   /// 计算视频渲染尺寸与旋转变换，统一输出为可见方向并修正坐标系。
-  /// - Parameter track: 原始视频轨道，用于读取 naturalSize 与 preferredTransform。
+  /// - Parameter track: 原始视频轨道，用于读取像素尺寸与 preferredTransform。
   /// - Returns: 渲染尺寸与变换，变换已兼容 Core Image 坐标系并保证左下为原点。
   /// - Note: 调用方需在渲染阶段应用该变换，并将写入端 transform 置为 identity。
   private static func buildRenderInfo(for track: AVAssetTrack) -> (renderSize: CGSize, renderTransform: CGAffineTransform) {
-    // 原始视频尺寸（未旋转的自然尺寸），用于坐标系翻转计算。
-    let naturalSize = track.naturalSize
-    // 原始像素矩形（未旋转的自然尺寸）。
-    let naturalRect = CGRect(origin: .zero, size: naturalSize)
+    // 视频真实像素尺寸，避免 naturalSize 与像素缓冲区不一致导致渲染偏移。
+    let pixelSize = Self.videoPixelSize(from: track)
+    // 原始像素矩形（未旋转的像素尺寸）。
+    let pixelRect = CGRect(origin: .zero, size: pixelSize)
     // 应用轨道方向后的矩形，用于计算偏移与可见尺寸。
-    let transformedRect = naturalRect.applying(track.preferredTransform)
+    let transformedRect = pixelRect.applying(track.preferredTransform)
     // 输出帧目标尺寸，单位为像素，方向为可见方向。
     let renderSize = CGSize(width: abs(transformedRect.width), height: abs(transformedRect.height))
     // 输入坐标系翻转：把 Core Image 的 y 轴向上转换为 AVFoundation 的 y 轴向下。
-    let inputFlip = Self.buildYAxisFlipTransform(height: naturalSize.height)
+    let inputFlip = Self.buildYAxisFlipTransform(height: pixelSize.height)
     // 输出坐标系翻转：把 AVFoundation 结果再转换回 Core Image 坐标。
     let outputFlip = Self.buildYAxisFlipTransform(height: renderSize.height)
     // 纠正方向并统一坐标系，避免竖拍视频出现 180° 翻转。
     let renderTransform = inputFlip
       .concatenating(track.preferredTransform)
       .concatenating(outputFlip)
-    return (renderSize, renderTransform)
+    // 变换后的画面矩形，用于计算归一化平移量。
+    let transformedByRender = pixelRect.applying(renderTransform)
+    // 归一化后的渲染变换，确保画面落在可视区域内。
+    let normalizedTransform = renderTransform.translatedBy(
+      x: -transformedByRender.origin.x,
+      y: -transformedByRender.origin.y
+    )
+    return (renderSize, normalizedTransform)
   }
 
   /// 构建 Y 轴翻转变换，用于在 Core Image 与 AVFoundation 坐标系间切换。
@@ -434,6 +441,24 @@ final class VideoWatermarkProcessor {
   private static func buildYAxisFlipTransform(height: CGFloat) -> CGAffineTransform {
     // 先平移再翻转，保证 y 轴方向与 AVFoundation 对齐。
     return CGAffineTransform(translationX: 0, y: height).scaledBy(x: 1, y: -1)
+  }
+
+  /// 获取视频真实像素尺寸，避免 naturalSize 与像素缓冲区不一致导致渲染偏移。
+  /// - Parameter track: 视频轨道对象，用于读取格式描述中的像素维度。
+  /// - Returns: 像素尺寸，读取失败时回退到 naturalSize。
+  private static func videoPixelSize(from track: AVAssetTrack) -> CGSize {
+    // 格式描述原始对象，用于获取视频像素维度。
+    guard let formatDescAny = track.formatDescriptions.first else {
+      return track.naturalSize
+    }
+    // 强制转换为视频格式描述，CoreFoundation 类型在此处必定可用。
+    let formatDesc = formatDescAny as! CMFormatDescription
+    // 像素维度信息，用于判定真实像素宽高。
+    let dims = CMVideoFormatDescriptionGetDimensions(formatDesc)
+    if dims.width <= 0 || dims.height <= 0 {
+      return track.naturalSize
+    }
+    return CGSize(width: Int(dims.width), height: Int(dims.height))
   }
 
   private static func prepareOverlayCI(request: ComposeVideoRequest, plugin: WatermarkKitPlugin, baseWidth: CGFloat, baseHeight: CGFloat) throws -> CIImage? {
