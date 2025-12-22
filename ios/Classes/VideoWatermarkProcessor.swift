@@ -6,6 +6,19 @@ import ImageIO
 
 final class VideoWatermarkProcessor {
   private let queue = DispatchQueue(label: "wm.video", qos: .userInitiated)
+  /// 视频合成专用 CIContext，关闭颜色管理以避免曝光/伽马偏移。
+  private let videoCIContext: CIContext = {
+    let options: [CIContextOption: Any] = [
+      .workingColorSpace: NSNull(),
+      .outputColorSpace: NSNull(),
+      .highQualityDownsample: true,
+      .cacheIntermediates: false
+    ]
+    if let device = MTLCreateSystemDefaultDevice() {
+      return CIContext(mtlDevice: device, options: options)
+    }
+    return CIContext(options: options)
+  }()
 
   private final class TaskState {
     var cancelled = false
@@ -178,7 +191,8 @@ final class VideoWatermarkProcessor {
     writer.startSession(atSourceTime: startTime)
     guard reader.startReading() else { throw reader.error ?? NSError(domain: "wm", code: -5, userInfo: [NSLocalizedDescriptionKey: "Failed to start reading"]) }
 
-    let ciContext = plugin.sharedCIContext
+    // 使用关闭颜色管理的 CIContext，避免视频亮度被提升。
+    let ciContext = videoCIContext
 
     // Precompute overlay with opacity and translation in display coordinates
     let preparedOverlay: CIImage? = {
