@@ -71,8 +71,12 @@ final class VideoWatermarkProcessor {
     }
 
     let natural = videoTrack.naturalSize
-    let t = videoTrack.preferredTransform
-    let display = CGSize(width: abs(natural.applying(t).width), height: abs(natural.applying(t).height))
+    let preferredTransform = videoTrack.preferredTransform
+    let orientedRect = CGRect(origin: .zero, size: natural).applying(preferredTransform)
+    let display = CGSize(width: abs(orientedRect.width), height: abs(orientedRect.height))
+    let frameTransform = preferredTransform.concatenating(
+      CGAffineTransform(translationX: -orientedRect.origin.x, y: -orientedRect.origin.y)
+    )
 
     // Prepare overlay CIImage once
     let overlayCI: CIImage? = try Self.prepareOverlayCI(request: request, plugin: plugin, baseWidth: display.width, baseHeight: display.height)
@@ -104,7 +108,8 @@ final class VideoWatermarkProcessor {
     ]
     let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
     videoInput.expectsMediaDataInRealTime = false
-    videoInput.transform = videoTrack.preferredTransform
+    // Frames are rotated into display orientation; keep output transform identity.
+    videoInput.transform = .identity
     guard writer.canAdd(videoInput) else { throw NSError(domain: "wm", code: -3, userInfo: [NSLocalizedDescriptionKey: "Cannot add video writer input"]) }
     writer.add(videoInput)
     let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: videoInput, sourcePixelBufferAttributes: [
@@ -194,7 +199,10 @@ final class VideoWatermarkProcessor {
 
           // Create base CIImage from sample
           if let srcPB = CMSampleBufferGetImageBuffer(sample) {
-            let base = CIImage(cvPixelBuffer: srcPB)
+            var base = CIImage(cvPixelBuffer: srcPB)
+            if !frameTransform.isIdentity {
+              base = base.transformed(by: frameTransform)
+            }
             let output: CIImage
             if let overlay = preparedOverlay {
               // Source-over
