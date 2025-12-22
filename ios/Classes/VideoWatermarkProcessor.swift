@@ -109,8 +109,9 @@ final class VideoWatermarkProcessor {
     )
 
     let reader = try AVAssetReader(asset: asset)
+    // 读取阶段统一使用 YUV，避免部分机型 BGRA 解码导致黑屏。
     let videoReaderOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: [
-      kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+      kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
     ])
     videoReaderOutput.alwaysCopiesSampleData = false
     guard reader.canAdd(videoReaderOutput) else { throw NSError(domain: "wm", code: -2, userInfo: [NSLocalizedDescriptionKey: "Cannot add video reader output"]) }
@@ -149,6 +150,8 @@ final class VideoWatermarkProcessor {
       kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
       kCVPixelBufferWidthKey as String: Int(renderSize.width),
       kCVPixelBufferHeightKey as String: Int(renderSize.height),
+      // 开启 Metal 兼容，确保 CIContext 渲染到像素缓冲区稳定输出。
+      kCVPixelBufferMetalCompatibilityKey as String: true,
       kCVPixelBufferIOSurfacePropertiesKey as String: [:]
     ])
 
@@ -237,16 +240,18 @@ final class VideoWatermarkProcessor {
             let orientedBase = CIImage(cvPixelBuffer: srcPB).transformed(by: renderTransform)
             // 强制底图不透明，避免部分视频 alpha 为 0 导致画面全黑。
             let baseOpaque = Self.forceOpaqueImage(orientedBase)
+            // 裁剪到输出尺寸，避免无限 extent 影响合成结果。
+            let baseCropped = baseOpaque.cropped(to: CGRect(origin: .zero, size: renderSize))
             let output: CIImage
             if let overlay = preparedOverlay {
               // Source-over
               let filter = CIFilter(name: "CISourceOverCompositing")!
               filter.setValue(overlay, forKey: kCIInputImageKey)
-              filter.setValue(baseOpaque, forKey: kCIInputBackgroundImageKey)
-              output = (filter.outputImage ?? baseOpaque)
+              filter.setValue(baseCropped, forKey: kCIInputBackgroundImageKey)
+              output = (filter.outputImage ?? baseCropped)
                 .cropped(to: CGRect(origin: .zero, size: renderSize))
             } else {
-              output = baseOpaque.cropped(to: CGRect(origin: .zero, size: renderSize))
+              output = baseCropped
             }
             ciContext.render(
               output,
@@ -469,7 +474,13 @@ final class VideoWatermarkProcessor {
     filter.setValue(CIVector(x: 0, y: 0, z: 1, w: 0), forKey: "inputBVector")
     filter.setValue(CIVector(x: 0, y: 0, z: 0, w: 0), forKey: "inputAVector")
     filter.setValue(CIVector(x: 0, y: 0, z: 0, w: 1), forKey: "inputBiasVector")
-    return filter.outputImage ?? image
+    let output = filter.outputImage ?? image
+    // CIColorMatrix 可能产生无限 extent，裁剪回原图范围避免黑屏。
+    let extent = image.extent
+    if extent.isInfinite {
+      return output
+    }
+    return output.cropped(to: extent)
   }
 
   private static func prepareOverlayCI(request: ComposeVideoRequest, plugin: WatermarkKitPlugin, baseWidth: CGFloat, baseHeight: CGFloat) throws -> CIImage? {
